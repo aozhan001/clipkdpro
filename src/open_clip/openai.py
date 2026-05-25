@@ -15,6 +15,13 @@ from .pretrained import get_pretrained_url, list_pretrained_models_by_tag, downl
 __all__ = ["list_openai_models", "load_openai_model"]
 
 
+def _torch_load_compat(model_path, map_location="cpu"):
+    try:
+        return torch.load(model_path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(model_path, map_location=map_location)
+
+
 def list_openai_models() -> List[str]:
     """Returns the names of available CLIP models"""
     return list_pretrained_models_by_tag('openai')
@@ -70,7 +77,7 @@ def load_openai_model(
         if jit:
             warnings.warn(f"File {model_path} is not a JIT archive. Loading as a state dict instead")
             jit = False
-        state_dict = torch.load(model_path, map_location="cpu")
+        state_dict = _torch_load_compat(model_path, map_location="cpu")
 
     if not jit:
         # Build a non-jit model from the OpenAI jitted model state dict

@@ -76,8 +76,15 @@ def get_tokenizer(model_name):
     return tokenizer
 
 
+def _torch_load_compat(checkpoint_path, map_location='cpu'):
+    try:
+        return torch.load(checkpoint_path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(checkpoint_path, map_location=map_location)
+
+
 def load_state_dict(checkpoint_path: str, map_location='cpu'):
-    checkpoint = torch.load(checkpoint_path, map_location=map_location)
+    checkpoint = _torch_load_compat(checkpoint_path, map_location=map_location)
     if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
         state_dict = checkpoint['state_dict']
     else:
@@ -97,7 +104,7 @@ def load_checkpoint(model, checkpoint_path, strict=True):
     return incompatible_keys
 
 def load_mae_checkpoint(model, checkpoint_path, strict=True):
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    checkpoint = _torch_load_compat(checkpoint_path, map_location='cpu')
     checkpoint_model = checkpoint['model']
     state_dict = model.state_dict()
     
