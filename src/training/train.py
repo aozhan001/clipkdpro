@@ -45,6 +45,43 @@ def unwrap_model(model):
         return model
 
 
+def _describe_feature_shapes(name, features):
+    if torch.is_tensor(features):
+        return f"{name}: type=Tensor shape={tuple(features.shape)}"
+    if isinstance(features, (list, tuple)):
+        child_shapes = []
+        for idx, feature in enumerate(features):
+            if torch.is_tensor(feature):
+                child_shapes.append(f"{idx}:{tuple(feature.shape)}")
+            else:
+                child_shapes.append(f"{idx}:{type(feature).__name__}")
+        return (
+            f"{name}: type={type(features).__name__} len={len(features)} "
+            f"items=[{', '.join(child_shapes)}]"
+        )
+    return f"{name}: type={type(features).__name__}"
+
+
+def _log_first_batch_feature_shapes(args, epoch, batch_idx, image_features, text_features, offline_teacher_cache):
+    if not getattr(args, "debug_feature_shapes", False):
+        return
+    if epoch != 0 or batch_idx != 0:
+        return
+
+    logging.info("Feature debug model=%s", args.model)
+    logging.info(_describe_feature_shapes("image_features", image_features))
+    logging.info(_describe_feature_shapes("text_features", text_features))
+
+    if offline_teacher_cache is None:
+        logging.info("offline_teacher_cache: None")
+        return
+
+    teacher_image_features = offline_teacher_cache.get("teacher_image_features")
+    teacher_text_features = offline_teacher_cache.get("teacher_text_features")
+    logging.info(_describe_feature_shapes("teacher_image_features", teacher_image_features))
+    logging.info(_describe_feature_shapes("teacher_text_features", teacher_text_features))
+
+
 def train_one_epoch(model, data, epoch, optimizer, scaler, scheduler, args, tb_writer=None):
     device = torch.device(args.device)
     autocast = get_autocast(args.precision)
@@ -206,6 +243,14 @@ def train_kd_one_epoch(model, t_model, data, epoch, loss, optimizer, scaler, sch
 
         with autocast():
             image_features, text_features, logit_scale = model(images, texts, distill=True, mask_ratio=args.mask_ratio)
+            _log_first_batch_feature_shapes(
+                args,
+                epoch,
+                i,
+                image_features,
+                text_features,
+                offline_teacher_cache,
+            )
 
             t_image_features = None
             t_text_features = None

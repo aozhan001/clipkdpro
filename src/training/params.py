@@ -489,6 +489,12 @@ def parse_args(args):
         help="If true, more information is logged."
     )
     parser.add_argument(
+        "--debug-feature-shapes",
+        default=False,
+        action="store_true",
+        help="Log student and offline teacher feature shapes for the first KD batch."
+    )
+    parser.add_argument(
         "--copy-codebase",
         default=False,
         action="store_true",
