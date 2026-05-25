@@ -1,3 +1,4 @@
+import logging
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -210,7 +211,105 @@ class DistillKL(nn.Module):
         return loss
 
 
+def _format_feature_shape(feature):
+    if torch.is_tensor(feature):
+        return tuple(feature.shape)
+    return type(feature).__name__
+
+
+def _raise_offline_feature_dim_mismatch(student_feature, teacher_features, name):
+    raise ValueError(
+        f"Offline KD feature dim mismatch: student {name} feature dim={student_feature.shape[-1]}, "
+        f"teacher {name} feature dim={teacher_features.shape[-1]}. "
+        "Please use the final projected CLIP embedding or add a projection head."
+    )
+
+
+def select_offline_global_feature(student_features, teacher_features, name="image"):
+    """Select the student global CLIP embedding that matches cached offline teacher features."""
+    if not torch.is_tensor(teacher_features) or teacher_features.ndim != 2:
+        raise ValueError(
+            f"teacher_features for offline {name} KD must be a 2D tensor [B, D], "
+            f"got {_format_feature_shape(teacher_features)}."
+        )
+
+    teacher_batch_size = teacher_features.shape[0]
+    teacher_feature_dim = teacher_features.shape[-1]
+
+    if torch.is_tensor(student_features):
+        if student_features.ndim != 2:
+            raise ValueError(
+                f"Offline KD expects student {name} features to be a 2D tensor [B, D], "
+                f"got shape={tuple(student_features.shape)}."
+            )
+        if student_features.shape[0] != teacher_batch_size:
+            raise ValueError(
+                f"Offline KD batch mismatch for {name} features: "
+                f"student batch={student_features.shape[0]}, teacher batch={teacher_batch_size}."
+            )
+        if student_features.shape[-1] != teacher_feature_dim:
+            _raise_offline_feature_dim_mismatch(student_features, teacher_features, name)
+        return student_features
+
+    if not isinstance(student_features, (list, tuple)):
+        raise TypeError(
+            f"student_features for offline {name} KD must be a Tensor, list, or tuple, "
+            f"got {type(student_features).__name__}."
+        )
+
+    candidate_shapes = []
+    matched_candidates = []
+    for idx, feature in enumerate(student_features):
+        candidate_shapes.append(f"{idx}:{_format_feature_shape(feature)}")
+        if not torch.is_tensor(feature):
+            continue
+        if feature.ndim != 2:
+            continue
+        if feature.shape[0] != teacher_batch_size:
+            continue
+        if feature.shape[-1] != teacher_feature_dim:
+            continue
+        matched_candidates.append((idx, feature))
+
+    if matched_candidates:
+        selected_idx, selected_feature = matched_candidates[0]
+        if len(matched_candidates) > 1:
+            logging.debug(
+                "Multiple offline KD %s feature candidates matched teacher shape %s; "
+                "selecting index %d with shape %s. All candidates: %s",
+                name,
+                tuple(teacher_features.shape),
+                selected_idx,
+                tuple(selected_feature.shape),
+                ", ".join(candidate_shapes),
+            )
+        else:
+            logging.debug(
+                "Selected offline KD %s feature candidate index %d with shape %s to match teacher shape %s.",
+                name,
+                selected_idx,
+                tuple(selected_feature.shape),
+                tuple(teacher_features.shape),
+            )
+        return selected_feature
+
+    raise ValueError(
+        f"Offline KD could not find a 2D student {name} feature matching teacher {name} feature "
+        f"shape {tuple(teacher_features.shape)}. Candidate shapes: {', '.join(candidate_shapes)}"
+    )
+
+
 def compute_offline_feature_kd_loss(student_features, teacher_features, loss_type="mse"):
+    if not torch.is_tensor(student_features) or not torch.is_tensor(teacher_features):
+        raise TypeError(
+            "compute_offline_feature_kd_loss expects Tensor inputs. "
+            "Use select_offline_global_feature before calling this helper."
+        )
+    if student_features.shape != teacher_features.shape:
+        raise ValueError(
+            f"Offline KD feature shape mismatch: student {tuple(student_features.shape)} vs "
+            f"teacher {tuple(teacher_features.shape)}."
+        )
     student_features = F.normalize(student_features, dim=-1)
     teacher_features = F.normalize(teacher_features, dim=-1)
     if loss_type == "mse":
@@ -485,32 +584,45 @@ class KDClipLoss(nn.Module):
             afd_loss = self.args.alpha_afd_loss * afd_loss
 
         if offline_teacher_cache is not None and getattr(self.args, "use_offline_teacher_cache", False):
-            offline_student_image_features, offline_student_text_features = self._project_student_features(
-                image_features, text_features
-            )
             cached_teacher_image_features = offline_teacher_cache["teacher_image_features"].to(
-                device=device, dtype=offline_student_image_features.dtype, non_blocking=True
+                device=device, non_blocking=True
             )
             cached_teacher_text_features = offline_teacher_cache["teacher_text_features"].to(
-                device=device, dtype=offline_student_text_features.dtype, non_blocking=True
+                device=device, non_blocking=True
+            )
+            student_image_features_for_offline_kd = select_offline_global_feature(
+                image_features, cached_teacher_image_features, name="image"
+            )
+            student_text_features_for_offline_kd = select_offline_global_feature(
+                text_features, cached_teacher_text_features, name="text"
+            )
+            cached_teacher_image_features = cached_teacher_image_features.to(
+                dtype=student_image_features_for_offline_kd.dtype
+            )
+            cached_teacher_text_features = cached_teacher_text_features.to(
+                dtype=student_text_features_for_offline_kd.dtype
             )
             image_feature_kd_loss = compute_offline_feature_kd_loss(
-                offline_student_image_features, cached_teacher_image_features, self.args.offline_kd_loss_type
+                student_image_features_for_offline_kd,
+                cached_teacher_image_features,
+                self.args.offline_kd_loss_type,
             )
             text_feature_kd_loss = compute_offline_feature_kd_loss(
-                offline_student_text_features, cached_teacher_text_features, self.args.offline_kd_loss_type
+                student_text_features_for_offline_kd,
+                cached_teacher_text_features,
+                self.args.offline_kd_loss_type,
             )
             candidate_teacher_text_features = offline_teacher_cache.get("candidate_teacher_text_features")
             candidate_teacher_text_feature_mask = offline_teacher_cache.get("candidate_teacher_text_feature_mask")
             if candidate_teacher_text_features is not None and candidate_teacher_text_feature_mask is not None:
                 candidate_teacher_text_features = candidate_teacher_text_features.to(
-                    device=device, dtype=offline_student_text_features.dtype, non_blocking=True
+                    device=device, dtype=student_text_features_for_offline_kd.dtype, non_blocking=True
                 )
                 candidate_teacher_text_feature_mask = candidate_teacher_text_feature_mask.to(
                     device=device, non_blocking=True
                 )
                 aggregated_candidate_teacher_text_features = aggregate_candidate_teacher_text_features(
-                    offline_student_text_features,
+                    student_text_features_for_offline_kd,
                     candidate_teacher_text_features,
                     candidate_teacher_text_feature_mask,
                     strategy=resolve_offline_text_candidate_strategy(self.args),
@@ -518,7 +630,7 @@ class KDClipLoss(nn.Module):
                 )
                 if aggregated_candidate_teacher_text_features is not None:
                     text_feature_candidate_kd_loss = compute_offline_feature_kd_loss(
-                        offline_student_text_features,
+                        student_text_features_for_offline_kd,
                         aggregated_candidate_teacher_text_features,
                         self.args.offline_kd_loss_type,
                     )
