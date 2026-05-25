@@ -66,3 +66,33 @@ def test_candidate_teacher_text_aggregation_returns_valid_features():
     assert aggregated_top1.shape == student.shape
     assert torch.isfinite(aggregated_mean).all()
     assert torch.isfinite(aggregated_top1).all()
+
+
+def test_select_offline_global_feature_prefers_matching_2d_candidate():
+    module = load_loss_module()
+
+    teacher_features = torch.randn(4, 512)
+    student_features = [torch.randn(4, 1024), torch.randn(4, 512)]
+
+    selected = module.select_offline_global_feature(
+        student_features,
+        teacher_features,
+        name="image",
+    )
+
+    assert selected.shape == (4, 512)
+    assert torch.equal(selected, student_features[1])
+
+
+def test_select_offline_global_feature_raises_on_tensor_dim_mismatch():
+    module = load_loss_module()
+
+    teacher_features = torch.randn(4, 512)
+    student_features = torch.randn(4, 1024)
+
+    with pytest.raises(ValueError, match="Offline KD feature dim mismatch: student image feature dim=1024, teacher image feature dim=512"):
+        module.select_offline_global_feature(
+            student_features,
+            teacher_features,
+            name="image",
+        )
