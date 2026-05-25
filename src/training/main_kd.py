@@ -42,6 +42,13 @@ def random_seed(seed=42, rank=0):
     random.seed(seed + rank)
 
 
+def _torch_load_external_checkpoint(checkpoint_path, map_location='cpu'):
+    try:
+        return torch.load(checkpoint_path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(checkpoint_path, map_location=map_location)
+
+
 def get_model_embed_dim(model_name):
     model_cfg = get_model_config(model_name)
     if model_cfg is None:
@@ -214,7 +221,7 @@ def main(args):
         t_model.eval()
         for t_n, t_p in t_model.named_parameters():
             t_p.requires_grad = False
-        checkpoint = torch.load(args.t_model_checkpoint, map_location='cpu')
+        checkpoint = _torch_load_external_checkpoint(args.t_model_checkpoint, map_location='cpu')
         sd = checkpoint
         #sd = checkpoint["state_dict"]
         if next(iter(sd.items()))[0].startswith('module'):

@@ -39,6 +39,13 @@ def random_seed(seed=42, rank=0):
     random.seed(seed + rank)
 
 
+def _torch_load_external_checkpoint(checkpoint_path, map_location='cpu'):
+    try:
+        return torch.load(checkpoint_path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(checkpoint_path, map_location=map_location)
+
+
 def main(args):
     args = parse_args(args)
     if torch.cuda.is_available():
@@ -161,7 +168,7 @@ def main(args):
                 f.write(f"{name}: {val}\n")
 
     if len(args.model_checkpoint) !=0:
-        checkpoint = torch.load(args.model_checkpoint, map_location='cpu')
+        checkpoint = _torch_load_external_checkpoint(args.model_checkpoint, map_location='cpu')
         sd = checkpoint
         if "state_dict" in sd.keys():
             sd = checkpoint["state_dict"]
